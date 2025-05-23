@@ -78,7 +78,7 @@ def train_and_save_model():
 def load_trained_model():
     return load_model(MODEL_PATH)
 
-# New: Classify function that takes a PIL Image directly
+# Classify function that takes a PIL Image directly
 def classify_image(pil_image, model, class_names):
     """
     Args:
@@ -99,23 +99,3 @@ def classify_image(pil_image, model, class_names):
     confidence = float(np.max(predictions[0]))
     label = class_names[predicted_index]
     return label, confidence
-
-# Optional: predict from path (kept for backward compatibility)
-def predict_image_class(img_path, model, class_names):
-    pil_image = Image.open(img_path)
-    return classify_image(pil_image, model, class_names)
-
-# Main for testing or training
-#if __name__ == "__main__":
-    # To train the model, uncomment this:
-    # train_and_save_model()
-
-    # To load and test prediction, uncomment these:
-    # model = load_trained_model()
-    # dataset = image_dataset_from_directory(DATA_DIR, batch_size=1)
-    # class_names = dataset.class_names
-
-    # Example usage with an image file:
-    # test_img_path = "test_images/sample_id.jpg"
-    # label, confidence = predict_image_class(test_img_path, model, class_names)
-    # print(f"Predicted: {label} with confidence {confidence:.2f}")
