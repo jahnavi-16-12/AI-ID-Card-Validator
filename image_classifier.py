@@ -131,39 +131,21 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, Input
-from tensorflow.keras.preprocessing import image_dataset_from_directory, image
+from tensorflow.keras.preprocessing import image_dataset_from_directory
+from PIL import Image  # for PIL Image input
 
-# Constants
-IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 32
-MODEL_PATH = "model/image_model.keras"
-DATA_DIR = "generated_ids/"
-
-# Data augmentation (optional)
+# Data augmentation layer
 data_augmentation = tf.keras.Sequential([
     tf.keras.layers.RandomFlip("horizontal_and_vertical"),
     tf.keras.layers.RandomRotation(0.2),
     tf.keras.layers.RandomZoom(0.1),
 ])
 
-# Build CNN model
-def build_model():
-    model = Sequential([
-        Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
-        data_augmentation,
-        Conv2D(32, (3,3), activation='relu'),
-        MaxPooling2D(2,2),
-        Conv2D(64, (3,3), activation='relu'),
-        MaxPooling2D(2,2),
-        Conv2D(128, (3,3), activation='relu'),
-        MaxPooling2D(2,2),
-        Flatten(),
-        Dense(128, activation='relu'),
-        Dropout(0.5),
-        Dense(3, activation='softmax')  # Classes: genuine, fake, suspicious
-    ])
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    return model
+# Constants
+IMAGE_SIZE = (224, 224)
+BATCH_SIZE = 32
+MODEL_PATH = "model/image_model.keras"
+DATA_DIR = "generated_ids/"
 
 # Load dataset with normalization and prefetching
 def load_data(data_dir=DATA_DIR):
@@ -186,14 +168,32 @@ def load_data(data_dir=DATA_DIR):
         label_mode="categorical"
     )
     
-    # Normalize pixel values
     normalization_layer = tf.keras.layers.Rescaling(1./255)
     train_ds = train_ds.map(lambda x, y: (normalization_layer(x), y)).prefetch(tf.data.AUTOTUNE)
     val_ds = val_ds.map(lambda x, y: (normalization_layer(x), y)).prefetch(tf.data.AUTOTUNE)
     
     return train_ds, val_ds
 
-# Train and save model
+# Build CNN model with data augmentation
+def build_model():
+    model = Sequential([
+        Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
+        data_augmentation,
+        Conv2D(32, (3,3), activation='relu'),
+        MaxPooling2D(2,2),
+        Conv2D(64, (3,3), activation='relu'),
+        MaxPooling2D(2,2),
+        Conv2D(128, (3,3), activation='relu'),
+        MaxPooling2D(2,2),
+        Flatten(),
+        Dense(128, activation='relu'),
+        Dropout(0.5),
+        Dense(3, activation='softmax')  # 3 classes: genuine, fake, suspicious
+    ])
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+# Train model and save
 def train_and_save_model():
     train_ds, val_ds = load_data()
     model = build_model()
@@ -206,26 +206,44 @@ def train_and_save_model():
 def load_trained_model():
     return load_model(MODEL_PATH)
 
-# ✅ Predict class of image from PIL object
-def predict_image_class(img_pil, model, class_names):
-    img = img_pil.resize(IMAGE_SIZE)
-    img_array = image.img_to_array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
+# New: Classify function that takes a PIL Image directly
+def classify_image(pil_image, model, class_names):
+    """
+    Args:
+        pil_image: PIL.Image.Image - input image object
+        model: loaded keras model
+        class_names: list of class names (in order)
+    Returns:
+        label: predicted class label (str)
+        confidence: prediction confidence (float)
+    """
+    img = pil_image.resize(IMAGE_SIZE)
+    img_array = np.array(img) / 255.0
+    if img_array.shape[-1] == 4:  # if RGBA, convert to RGB
+        img_array = img_array[..., :3]
+    img_array = np.expand_dims(img_array, axis=0)  # batch dimension
     predictions = model.predict(img_array)
     predicted_index = np.argmax(predictions[0])
     confidence = float(np.max(predictions[0]))
     label = class_names[predicted_index]
     return label, confidence
 
-# Optional training/test entry point
-if __name__ == "__main__":
-    # Uncomment to train
+# Optional: predict from path (kept for backward compatibility)
+def predict_image_class(img_path, model, class_names):
+    pil_image = Image.open(img_path)
+    return classify_image(pil_image, model, class_names)
+
+# Main for testing or training
+#if __name__ == "__main__":
+    # To train the model, uncomment this:
     # train_and_save_model()
 
-    # Example test call
+    # To load and test prediction, uncomment these:
     # model = load_trained_model()
-    # from PIL import Image
-    # img = Image.open("test_images/sample_id.jpg")
-    # label, confidence = predict_image_class(img, model, ['fake', 'genuine', 'suspicious'])
-    # print(f"Predicted: {label} with {confidence:.2f} confidence")
-    pass
+    # dataset = image_dataset_from_directory(DATA_DIR, batch_size=1)
+    # class_names = dataset.class_names
+
+    # Example usage with an image file:
+    # test_img_path = "test_images/sample_id.jpg"
+    # label, confidence = predict_image_class(test_img_path, model, class_names)
+    # print(f"Predicted: {label} with confidence {confidence:.2f}")

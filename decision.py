@@ -1,18 +1,23 @@
-def decide_label(validation_score, ocr_fields_found, template_match_score, config):
+import json
+
+def decide_label(validation_score, ocr_result, template_match_score, threshold):
     """
     Combines AI score, OCR fields, and template score to make final decision.
+    
+    Args:
+        validation_score: Score from image classifier
+        ocr_result: Dictionary containing OCR validation results
+        template_match_score: Score from template matching
+        threshold: Minimum threshold for validation
     """
-    min_fields = set(config.get("ocr_min_fields", []))
-    threshold = config.get("validation_threshold", 0.7)
-    approved_colleges = config.get("approved_colleges", [])
+    # Calculate confidence based on detected fields
+    fields_detected = ocr_result["fields_detected"]
+    total_possible_fields = 4  # college, name, roll/class, face
+    ocr_confidence = fields_detected / total_possible_fields
 
-    # OCR confidence = how many required fields were detected
-    ocr_found = set(ocr_fields_found)
-    ocr_confidence = len(ocr_found & min_fields) / len(min_fields) if min_fields else 1.0
-
-    if validation_score > 0.85 and ocr_confidence == 1.0 and template_match_score >= 0.15:
+    if validation_score > 0.85 and ocr_confidence >= 0.75 and template_match_score >= 0.15:
         return "genuine", "approved", "All checks passed"
-    elif validation_score < 0.6 or ocr_confidence == 0:
-        return "fake", "rejected", "Low AI score or OCR failed"
+    elif validation_score < 0.6 or ocr_confidence < 0.5:
+        return "fake", "rejected", "Low AI score or insufficient fields detected"
     else:
         return "suspicious", "manual_review", "Unclear classification or missing fields"

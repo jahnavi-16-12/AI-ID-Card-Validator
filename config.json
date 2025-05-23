@@ -1,5 +1,5 @@
 {
   "validation_threshold": 0.7,
-  "ocr_min_fields": ["name", "roll_number", "college"],
-  "approved_colleges": ["IIT Bombay", "NIT Warangal", "JNTU Hyderabad", "VelTech Engineering College"]
+  "ocr_min_fields": 3,
+  "class_names": ["genuine", "fake", "suspicious"]
 }

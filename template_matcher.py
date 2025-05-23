@@ -84,7 +84,29 @@ class TemplateMatcher:
             return False, best_template, best_score
 
 
-# --- UPDATED main usage part for file input ---
+# --- Function to use in FastAPI (used in main.py) ---
+matcher = TemplateMatcher(template_dir="test_template/")
+
+def check_template(image_bytes):
+    """
+    Receives image bytes (from FastAPI), converts to grayscale image,
+    and checks if it matches any known template.
+    
+    Returns:
+        bool: True if template matches, False otherwise
+    """
+    # Convert bytes to image
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+
+    if img is None:
+        return False
+
+    matched, _, _ = matcher.is_match(img)
+    return matched
+
+
+# --- Optional standalone CLI usage for testing ---
 if __name__ == "__main__":
     # Initialize the TemplateMatcher with your templates folder
     matcher = TemplateMatcher(template_dir="test_template/")
