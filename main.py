@@ -10,6 +10,7 @@ from decision import decide_label
 from PIL import Image
 import io
 import numpy as np
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,10 +19,14 @@ app = FastAPI(title="College ID Validator")
 
 def load_model():
     try:
-        session = ort.InferenceSession("model/image_model.onnx")
+        model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "model", "image_model.onnx"))
+        session = ort.InferenceSession(model_path)
+        input_details = session.get_inputs()[0]
         logger.info(f"✅ ONNX Model loaded successfully")
-        logger.info(f"Model input shape: {session.get_inputs()[0].shape}")
-        logger.info(f"Model input type: {session.get_inputs()[0].type}")
+        logger.info(f"Model input name: {input_details.name}")
+        logger.info(f"Model input shape: {input_details.shape}")
+        logger.info(f"Model input type: {input_details.type}")
+        logger.info(f"Model input details: {input_details}")
         return session
     except Exception as e:
         logger.error(f"❌ Error loading ONNX model: {e}")
@@ -29,7 +34,7 @@ def load_model():
 
 def load_json(path):
     try:
-        with open(path, "r") as f:
+        with open(os.path.abspath(os.path.join(os.path.dirname(__file__), path)), "r") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"❌ Error loading {path}: {e}")
@@ -42,28 +47,88 @@ approved_colleges = load_json("approved_colleges.json")
 class_names = config.get("class_names", ["genuine", "fake", "suspicious"])
 
 def preprocess_image(pil_image):
-    img = pil_image.resize((224, 224))
-    img_array = np.array(img).astype(np.float32) / 255.0
-    if img_array.ndim == 2:  # grayscale to RGB
-        img_array = np.stack([img_array] * 3, axis=-1)
-    img_array = np.expand_dims(img_array, axis=0)  # (1, 224, 224, 3)
-    img_array = np.transpose(img_array, (0, 3, 1, 2))  # Change to (1, 3, 224, 224) for ONNX
+    """
+    Preprocess image for ONNX model input:
+    1. Resize to 224x224
+    2. Convert to float32 and normalize using ImageNet stats
+    3. Convert to NCHW format (batch, channels, height, width)
+    """
+    logger.info("Starting image preprocessing...")
+    logger.info(f"Input image mode: {pil_image.mode}")
+    logger.info(f"Input image size: {pil_image.size}")
+    
+    # Convert to RGB if not already
+    if pil_image.mode != 'RGB':
+        pil_image = pil_image.convert('RGB')
+        logger.info("Converted image to RGB mode")
+    
+    # Resize with antialiasing for better quality
+    img = pil_image.resize((224, 224), Image.Resampling.LANCZOS)
+    logger.info(f"After resize: {img.size}")
+    
+    # Convert to numpy array and normalize
+    img_array = np.array(img).astype(np.float32)
+    img_array = img_array / 255.0  # Scale to [0,1]
+    
+    # ImageNet normalization (ensure float32)
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img_array = (img_array - mean) / std
+    
+    logger.info(f"After numpy conversion: shape={img_array.shape}, dtype={img_array.dtype}")
+    logger.info(f"Array value range: min={img_array.min():.3f}, max={img_array.max():.3f}")
+    
+    # Ensure shape is (224, 224, 3)
+    if img_array.shape != (224, 224, 3):
+        logger.warning(f"Invalid image shape after preprocessing: {img_array.shape}")
+        raise ValueError(f"Invalid image shape after preprocessing: {img_array.shape}")
+    
+    # Convert from NHWC to NCHW format
+    img_array = np.transpose(img_array, (2, 0, 1))  # (H,W,C) -> (C,H,W)
+    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension -> (1,C,H,W)
+    
+    # Ensure float32 type
+    img_array = img_array.astype(np.float32)
+    
+    logger.info(f"Final preprocessed shape: {img_array.shape}")
+    logger.info(f"Final array stats: min={img_array.min():.3f}, max={img_array.max():.3f}, mean={img_array.mean():.3f}")
     return img_array
 
 def classify_image_onnx(pil_image, session, class_names):
     try:
         input_name = session.get_inputs()[0].name
+        input_shape = session.get_inputs()[0].shape
+        logger.info(f"Model expects input shape: {input_shape}")
+        logger.info(f"Model input name: {input_name}")
+        
         img_array = preprocess_image(pil_image)
-        logger.debug(f"Image array shape for ONNX model: {img_array.shape}")
+        logger.info(f"Preprocessed image shape: {img_array.shape}")
+        logger.info(f"Input array stats: min={img_array.min():.3f}, max={img_array.max():.3f}, mean={img_array.mean():.3f}")
+        
         outputs = session.run(None, {input_name: img_array})
-        logger.debug(f"Raw ONNX output: {outputs}")
+        logger.info(f"Raw model output shape: {[out.shape for out in outputs]}")
+        logger.info(f"Raw output values: {outputs[0]}")
+        
         scores = outputs[0][0]  # (1, num_classes) -> [num_classes]
+        logger.info(f"Raw scores: {scores}")
+        
         exp_scores = np.exp(scores - np.max(scores))  # for numerical stability
+        logger.info(f"Exp scores: {exp_scores}")
+        
         probs = exp_scores / exp_scores.sum()
+        logger.info(f"Class probabilities: {dict(zip(class_names, probs))}")
+        logger.info(f"Class probabilities array: {probs}")
+        
         pred_idx = np.argmax(probs)
+        logger.info(f"Predicted class: {class_names[pred_idx]} (index {pred_idx})")
+        logger.info(f"Confidence: {float(probs[pred_idx]):.3f}")
+        
         return class_names[pred_idx], float(probs[pred_idx])
     except Exception as e:
-        logger.error(f"❌ Exception in classify_image_onnx: {e}")
+        logger.error(f"❌ Exception in classify_image_onnx: {str(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        import traceback
+        logger.error(f"Stack trace:\n{traceback.format_exc()}")
         raise
 
 @app.get("/health")
@@ -116,6 +181,13 @@ async def validate_id(request: ValidateIDRequest, background_tasks: BackgroundTa
         raise HTTPException(status_code=500, detail="Template matching failed")
 
     try:
+        logger.info(f"Decision inputs:")
+        logger.info(f"- Validation score: {validation_score:.3f}")
+        logger.info(f"- OCR fields detected: {ocr_result['fields_detected']}/{4}")
+        logger.info(f"- OCR confidence: {ocr_result['fields_detected']/4:.3f}")
+        logger.info(f"- Template match score: {template_match}")
+        logger.info(f"- Threshold: {config['validation_threshold']}")
+        
         label, status, reason = decide_label(
             validation_score,
             ocr_result,

@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TemplateMatcher:
     def __init__(self, template_dir, resize_dim=(600, 400), min_match_count=10):
@@ -34,10 +37,14 @@ class TemplateMatcher:
             best_match_template (str): filename of best matching template
             best_score (float): similarity score (higher is better)
         """
+        logger.info(f"Input image shape: {input_img.shape}")
         input_img = cv2.resize(input_img, self.resize_dim)
+        logger.info(f"Resized input shape: {input_img.shape}")
         
         # Detect keypoints and descriptors for input image
         kp1, des1 = self.orb.detectAndCompute(input_img, None)
+        logger.info(f"Input image keypoints: {len(kp1) if kp1 else 0}")
+        logger.info(f"Input descriptors shape: {des1.shape if des1 is not None else None}")
         
         bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         
@@ -45,26 +52,34 @@ class TemplateMatcher:
         best_template = None
         
         for (template_name, template_img) in self.templates:
+            logger.info(f"\nMatching against template: {template_name}")
             kp2, des2 = self.orb.detectAndCompute(template_img, None)
+            logger.info(f"Template keypoints: {len(kp2) if kp2 else 0}")
             
             if des1 is None or des2 is None:
+                logger.warning(f"No descriptors found for {template_name}")
                 continue
             
             # Match descriptors
             matches = bf.match(des1, des2)
+            logger.info(f"Total matches found: {len(matches)}")
             
             # Sort matches by distance (lower distance is better)
             matches = sorted(matches, key=lambda x: x.distance)
             
             # Filter good matches based on distance threshold
             good_matches = [m for m in matches if m.distance < 60]
+            logger.info(f"Good matches (distance < 60): {len(good_matches)}")
             
             score = len(good_matches) / max(len(kp2), 1)  # Normalize by keypoints count
+            logger.info(f"Match score: {score:.3f}")
             
             if score > best_score:
                 best_score = score
                 best_template = template_name
+                logger.info(f"New best match: {template_name} with score {score:.3f}")
         
+        logger.info(f"\nFinal best match: {best_template} with score {best_score:.3f}")
         return best_template, best_score
 
     def is_match(self, input_img, threshold=0.15):
@@ -85,7 +100,8 @@ class TemplateMatcher:
 
 
 # --- Function to use in FastAPI (used in main.py) ---
-matcher = TemplateMatcher(template_dir="test_template/")
+template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "test_template"))
+matcher = TemplateMatcher(template_dir=template_dir)
 
 def check_template(image_bytes):
     """
@@ -93,17 +109,24 @@ def check_template(image_bytes):
     and checks if it matches any known template.
     
     Returns:
-        bool: True if template matches, False otherwise
+        float: Similarity score between 0 and 1
     """
+    logger.info("Starting template matching...")
+    
     # Convert bytes to image
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-
+    
     if img is None:
-        return False
-
-    matched, _, _ = matcher.is_match(img)
-    return matched
+        logger.error("Failed to decode image bytes")
+        return 0.0
+        
+    logger.info(f"Input image shape: {img.shape}")
+    logger.info(f"Image value range: min={img.min()}, max={img.max()}")
+    
+    _, _, score = matcher.is_match(img)
+    logger.info(f"Template matching score: {score:.3f}")
+    return score
 
 
 # --- Optional standalone CLI usage for testing ---

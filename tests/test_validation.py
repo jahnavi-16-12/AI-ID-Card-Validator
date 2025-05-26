@@ -13,10 +13,10 @@ client = TestClient(app)
 
 # Test cases data: [filename, expected_label, expected_status]
 test_cases = [
-    ("clear_id.jpg", "suspicious", "manual_review"),
+    ("clear_id.jpg", "genuine", "approved"),
     ("fake_template.jpg", "fake", "rejected"),
-    ("cropped_id.jpg", "fake", "rejected"),
-    ("poor_ocr.jpg", "fake", "rejected"),
+    ("cropped_id.jpg", "suspicious", "manual_review"),
+    ("poor_ocr.jpg", "suspicious", "manual_review"),
     ("meme.jpg", "fake", "rejected"),
 ]
 

@@ -1,101 +1,209 @@
 import os
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, Input
-from tensorflow.keras.preprocessing import image_dataset_from_directory
-from PIL import Image  # for PIL Image input
-
-# Data augmentation layer
-data_augmentation = tf.keras.Sequential([
-    tf.keras.layers.RandomFlip("horizontal_and_vertical"),
-    tf.keras.layers.RandomRotation(0.2),
-    tf.keras.layers.RandomZoom(0.1),
-])
+from PIL import Image
+import onnx
+import onnxruntime as ort
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
 
 # Constants
 IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 32
-MODEL_PATH = "model/image_model.keras"
+MODEL_PATH = "model/image_model.onnx"
 DATA_DIR = "generated_ids/"
 
-# Load dataset with normalization and prefetching
-def load_data(data_dir=DATA_DIR):
-    train_ds = image_dataset_from_directory(
-        data_dir,
-        validation_split=0.2,
-        subset="training",
-        seed=123,
-        image_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        label_mode="categorical"
-    )
-    val_ds = image_dataset_from_directory(
-        data_dir,
-        validation_split=0.2,
-        subset="validation",
-        seed=123,
-        image_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        label_mode="categorical"
-    )
-    
-    normalization_layer = tf.keras.layers.Rescaling(1./255)
-    train_ds = train_ds.map(lambda x, y: (normalization_layer(x), y)).prefetch(tf.data.AUTOTUNE)
-    val_ds = val_ds.map(lambda x, y: (normalization_layer(x), y)).prefetch(tf.data.AUTOTUNE)
-    
-    return train_ds, val_ds
+class IDCardDataset(Dataset):
+    def __init__(self, data_dir, transform=None):
+        self.data_dir = data_dir
+        self.transform = transform
+        self.classes = ['genuine', 'fake', 'suspicious']
+        self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
+        self.images = []
+        self.labels = []
+        
+        # Load all images and labels
+        for class_name in self.classes:
+            class_dir = os.path.join(data_dir, class_name)
+            if not os.path.exists(class_dir):
+                continue
+                
+            for img_name in os.listdir(class_dir):
+                img_path = os.path.join(class_dir, img_name)
+                if img_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                    self.images.append(img_path)
+                    self.labels.append(self.class_to_idx[class_name])
 
-# Build CNN model with data augmentation
-def build_model():
-    model = Sequential([
-        Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
-        data_augmentation,
-        Conv2D(32, (3,3), activation='relu'),
-        MaxPooling2D(2,2),
-        Conv2D(64, (3,3), activation='relu'),
-        MaxPooling2D(2,2),
-        Conv2D(128, (3,3), activation='relu'),
-        MaxPooling2D(2,2),
-        Flatten(),
-        Dense(128, activation='relu'),
-        Dropout(0.5),
-        Dense(3, activation='softmax')  # 3 classes: genuine, fake, suspicious
-    ])
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    return model
+    def __len__(self):
+        return len(self.images)
 
-# Train model and save
+    def __getitem__(self, idx):
+        img_path = self.images[idx]
+        label = self.labels[idx]
+        
+        # Load and transform image
+        with Image.open(img_path) as img:
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            if self.transform:
+                img = self.transform(img)
+        
+        return img, label
+
+class IDCardClassifier(nn.Module):
+    def __init__(self):
+        super(IDCardClassifier, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(32, 64, 3),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(64, 128, 3),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 26 * 26, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, 3)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
 def train_and_save_model():
-    train_ds, val_ds = load_data()
-    model = build_model()
-    model.fit(train_ds, validation_data=val_ds, epochs=20)
-    os.makedirs("model", exist_ok=True)
-    model.save(MODEL_PATH)
-    print(f"Model saved to {MODEL_PATH}")
+    # Set up data transforms
+    transform = transforms.Compose([
+        transforms.Resize(IMAGE_SIZE),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Create datasets
+    full_dataset = IDCardDataset(DATA_DIR, transform=transform)
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+    
+    # Initialize model, loss function, and optimizer
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = IDCardClassifier().to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters())
+    
+    print(f"Training on {device}")
+    
+    # Training loop
+    num_epochs = 20
+    best_val_acc = 0.0
+    
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+        
+        epoch_loss = running_loss / len(train_loader)
+        epoch_acc = 100. * correct / total
+        
+        print(f'Epoch {epoch+1}/{num_epochs}:')
+        print(f'Training Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.2f}%')
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                
+                val_loss += loss.item()
+                _, predicted = outputs.max(1)
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
+        
+        val_loss = val_loss / len(val_loader)
+        val_acc = 100. * correct / total
+        print(f'Validation Loss: {val_loss:.4f}, Accuracy: {val_acc:.2f}%\n')
+        
+        # Save best model
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            # Save the model in ONNX format
+            os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+            dummy_input = torch.randn(1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1], device=device)
+            torch.onnx.export(model, 
+                            dummy_input, 
+                            MODEL_PATH,
+                            opset_version=13,
+                            input_names=['input'],
+                            output_names=['output'],
+                            dynamic_axes={'input': {0: 'batch_size'},
+                                        'output': {0: 'batch_size'}})
+            print(f"New best model saved in ONNX format to {MODEL_PATH}")
 
-# Load saved model
 def load_trained_model():
-    return load_model(MODEL_PATH)
+    return ort.InferenceSession(MODEL_PATH)
 
-# Classify function that takes a PIL Image directly
 def classify_image(pil_image, model, class_names):
     """
     Args:
         pil_image: PIL.Image.Image - input image object
-        model: loaded keras model
+        model: ONNX InferenceSession
         class_names: list of class names (in order)
     Returns:
         label: predicted class label (str)
         confidence: prediction confidence (float)
     """
-    img = pil_image.resize(IMAGE_SIZE)
-    img_array = np.array(img) / 255.0
-    if img_array.shape[-1] == 4:  # if RGBA, convert to RGB
-        img_array = img_array[..., :3]
-    img_array = np.expand_dims(img_array, axis=0)  # batch dimension
-    predictions = model.predict(img_array)
-    predicted_index = np.argmax(predictions[0])
-    confidence = float(np.max(predictions[0]))
-    label = class_names[predicted_index]
+    # Prepare image
+    transform = transforms.Compose([
+        transforms.Resize(IMAGE_SIZE),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    img_tensor = transform(pil_image).unsqueeze(0).numpy()
+    
+    # Run inference
+    input_name = model.get_inputs()[0].name
+    output_name = model.get_outputs()[0].name
+    predictions = model.run([output_name], {input_name: img_tensor.astype(np.float32)})[0]
+    
+    # Get prediction and confidence
+    predicted_idx = np.argmax(predictions[0])
+    confidence = float(predictions[0][predicted_idx])
+    label = class_names[predicted_idx]
+    
     return label, confidence
+if __name__ == "__main__":
+    print("Starting training...")
+    train_and_save_model()
