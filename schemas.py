@@ -11,3 +11,6 @@ class ValidateIDResponse(BaseModel):
     status: str  # approved, manual_review, rejected
     reason: str
     threshold: float
+    ocr_fields_detected: int
+    ocr_confidence: float
+    ocr_text_sample: str

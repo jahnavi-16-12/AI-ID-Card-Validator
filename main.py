@@ -2,6 +2,9 @@ import json
 import base64
 import logging
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from schemas import ValidateIDRequest, ValidateIDResponse
 import onnxruntime as ort
 from ocr_validator import validate_id_card
@@ -16,6 +19,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="College ID Validator")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 def load_model():
     try:
@@ -131,6 +146,24 @@ def classify_image_onnx(pil_image, session, class_names):
         logger.error(f"Stack trace:\n{traceback.format_exc()}")
         raise
 
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the main frontend page"""
+    try:
+        with open("static/index.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Frontend not found. Please check if static/index.html exists.</h1>", status_code=404)
+
+@app.get("/validator", response_class=HTMLResponse)
+async def validator():
+    """Serve the validator page"""
+    try:
+        with open("static/validator.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Validator page not found. Please check if static/validator.html exists.</h1>", status_code=404)
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -205,7 +238,10 @@ async def validate_id(request: ValidateIDRequest, background_tasks: BackgroundTa
         label=label,
         status=status,
         reason=reason,
-        threshold=config["validation_threshold"]
+        threshold=config["validation_threshold"],
+        ocr_fields_detected=ocr_result["fields_detected"],
+        ocr_confidence=ocr_result["fields_detected"]/4,
+        ocr_text_sample=ocr_result["ocr_text_sample"]
     )
 
 if __name__ == "__main__":
